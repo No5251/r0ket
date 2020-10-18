@@ -9,13 +9,16 @@ use IO::Select;
 use Socket;
 
 use Digest::CRC qw(crcccitt);
-use POSIX qw(strftime :termios_h);
+use POSIX qw(strftime :termios_h :errno_h);
 use Time::HiRes;
 
 our $verbose=0;
 our $bridge; # Open device
 our $quiet=0;
-our $timediff=60*60*2;
+
+use Time::Local qw(timegm timelocal);
+my @t = localtime(time);
+our $timediff = timegm(@t) - timelocal(@t);
 
 my $rxlen=0; # Filter for get_pkt()
 
@@ -100,7 +103,6 @@ sub writebeacon{
 ### Packet mgmt
 
 my $buffer;
-our $firstpkt=1;
 sub get_data{
     my $filter=shift||0;
 
@@ -112,27 +114,25 @@ sub get_data{
 
     while(1){
 
-        if ($buffer =~ s/^\\(\d)(.*?)\\0//s){
+        if ($buffer =~ s/^\\([1-9])(.*?)\\0//s){
             my ($type,$str)=($1,$2);
             $str=~s/\\\\/\\/g; # dequote
 #            print STDERR "ret:pkt[$type]=",(sprint $str),"\n";
             if($filter==0){
                 return ($type,$str);
             }elsif($filter==$type){
+                return ($type,$str);
                 return $str;
             };
-            print "got a 2: ",length($str)," $str \n" if ($type==2);
+#            print "got a 2: ",length($str)," $str \n" if ($type==2);
+            print "rejected a $type: ",length($str)," $str \n";
             next; # If rejected, look for next packet.
         };
 
         if(length($buffer)>1){
             if($buffer =~ /[^\\]\\[1-9]/){
                 $buffer =~ s/^(.*?[^\\])(\\[1-9])/\2/s;
-                if($firstpkt){
-                    $firstpkt--;
-                }else{
-                    print STDERR "Unparseable stuff: <",sprint($1),">\n" if(!$quiet);
-                };
+                print STDERR "Unparseable stuff: ",length($1)," <",sprint($1),">\n" if(!$quiet);
                 redo; # Try parsing the rest.
             };
         };
@@ -150,9 +150,16 @@ sub get_data{
         };
         if($rout eq $rin){
             my $rr="";
-            sysread($bridge,$rr,1024);
-#            print "len=",length($rr),"\n";
+            my $rv=sysread($bridge,$rr,1024);
+
+            if(!defined($rv) || $rv==0){
+                if($! != EAGAIN){
+                    die "Device vanished\n";
+                };
+            };
+
             $buffer.=$rr;
+#            print "len=",length($buffer),"\n";
             die "Nothing to read?" if(length($rr)==0); # Probably device gone.
 #            print "recv: ",unpack("H*",$rr),"\n";
         };
@@ -167,6 +174,7 @@ sub get_packet{
         if($rxlen==0 || length($pkt)==$rxlen){
             return $pkt;
         };
+        print "Rejected pkt with len=",length($pkt),"\n";
     };
 };
 
@@ -367,12 +375,14 @@ if($ser =~ /:/){
     $term->setcc(VTIME,1);
     $term->setcc(VMIN,0);
     $term->setcc(ECHO,0);
+    $term->setlflag($term->getlflag()&~(ECHO | ECHOK | ICANON));
     $term->setattr(fileno($bridge),TCSANOW);
 };
 
     #empty buffer, in case there is old data
     my $dummy;
     sysread($bridge,$dummy,1024);
+print "Threw away ",length($dummy)," bytes old data\n" if($verbose);
 
     return $ser;
 };
@@ -415,10 +425,27 @@ sub set_rxlen {
 sub get_id {
     send_pkt_num("",7);
     my $id=unpack("H*",get_data(7));
-    wait_ok(1);
     return $id;
 };
+sub set_mac_width {
+    send_pkt_num(pack("C",(shift)-2),8);
+    wait_ok(1);
+};
 
+sub set_config {
+    send_pkt_num(pack("C",shift),9);
+    wait_ok(1);
+};
+
+sub set_speed {
+    send_pkt_num(pack("C",shift),'s');
+    wait_ok(1);
+};
+
+sub set_rx {
+    send_pkt_num(pack("C",shift),'r');
+    wait_ok(1)
+};
 
 sub wait_ok {
     my ($type,$pkt);

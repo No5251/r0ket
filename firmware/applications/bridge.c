@@ -62,13 +62,17 @@ void main_bridge(void)
     char input[64];
     char led1=0;
     char led2=0;
+    char ok;
+    char setup=R_RF_SETUP_RF_PWR_3|R_RF_SETUP_DR_2M;
+
+    char configflags=R_CONFIG_EN_CRC;
+    char receiving=2; // Backward compat. 0 would be sane default.
 
     usbCDCInit();
     delayms(500);
     nrf_init();
     nrf_config_set(&config);
     
-    nrf_rcv_pkt_start();
     while(1){
         int l, i, status;
         CDC_OutBufAvailChar (&l);
@@ -78,29 +82,36 @@ void main_bridge(void)
             for(i=0; i<l; i++){
                 uint8_t cmd = serialmsg_put(input[i]);
                 if( cmd != SERIAL_NONE ){
+                    ok=1;
                     switch( cmd ){
                         case '1':
                             // can we loose packets here?
-                            nrf_rcv_pkt_end();
+                            if(receiving==1){
+                                nrf_rcv_pkt_end();
+                            };
                             status=snd_pkt_no_crc(serialmsg_len, serialmsg_message);
                             //status=nrf_snd_pkt_crc(serialmsg_len, serialmsg_message);
-                            nrf_rcv_pkt_start();
+                            if(receiving==1){
+                                nrf_rcv_pkt_start(configflags);
+                            };
                         break;
                         case '3':
                             memcpy(config.txmac, serialmsg_message, 5);
-                            nrf_config_set(&config);
+                            nrf_write_long(C_W_REGISTER|R_TX_ADDR,5,config.txmac);
                         break;
                         case '4':
                             memcpy(config.mac0, serialmsg_message, 5);
-                            nrf_config_set(&config);
+                            nrf_write_long(C_W_REGISTER|R_RX_ADDR_P0,5,config.mac0);
+                            nrf_write_reg(R_EN_RXADDR,1);
                         break;
                         case '5':
                             config.channel=serialmsg_message[0];
-                            nrf_config_set(&config);
+                            nrf_set_channel(config.channel);
+                            nrf_cmd(C_FLUSH_RX);
                         break;
                         case '6':
                             config.maclen[0]=serialmsg_message[0];
-                            nrf_config_set(&config);
+                            nrf_write_reg(R_RX_PW_P0,config.maclen[0]);
                         break;
                         case '7':
                             puts("\\7");
@@ -109,9 +120,64 @@ void main_bridge(void)
                             s[sizeof(uint32_t)]=0;
                             puts(s);
                             puts("\\0");
+                            ok=0; // No need to send OK
                         break;
+                        case '8': /* set mac width */
+                            nrf_write_reg(R_SETUP_AW,serialmsg_message[0]);
+                        break;
+                        case '9': // Dis/Enable CRC
+                            configflags=
+                                    ((serialmsg_message[0]&1)?R_CONFIG_EN_CRC :0)|
+                                    ((serialmsg_message[0]&2)?R_CONFIG_CRCO :0)
+                                    
+                                    ;
+                            /* maybe add enhanced shockburst stuff here */
+                        break;
+                        case 'r': // Dis/Enable Receiving
+                            if(serialmsg_message[0]&1){
+                                nrf_rcv_pkt_start(0);
+                                receiving=1;
+                            }else{
+                                nrf_rcv_pkt_end();
+                                receiving=0;
+                            };
+                        break;
+                        case 's': // set rf speed
+                            setup=R_RF_SETUP_RF_PWR_3;
+                            switch(serialmsg_message[0]&3){
+                                case 0:
+                                    setup|=R_RF_SETUP_DR_250K;
+                                    break;
+                                case 1:
+                                    setup|=R_RF_SETUP_DR_1M;
+                                    break;
+                                case 2:
+                                    setup|=R_RF_SETUP_DR_2M;
+                                    break;
+                            };
+                            nrf_write_reg(R_RF_SETUP,setup);
+                            break;
+
+                        default:
+                            ok=0;
+                            puts("\\9Error cmd=");
+                            putchr(cmd);
+                            if(serialmsg_len>0){
+                                puts(", arg=");
+                                CDC_WrInBuf(serialmsg_message, &serialmsg_len);
+                            }else{
+                                puts(", len=0");
+                            };
+                            puts("\\0");
                     };
-                    puts("\\2\\0");
+
+                    if(ok){
+                        puts("\\2\\0");
+                    };
+                    if(receiving==2){
+                        nrf_rcv_pkt_start(configflags);
+                        receiving=1;
+                    };
                 }
             }
         }
@@ -142,7 +208,7 @@ void dump_encoded(int len, uint8_t *data)
 
 void tick_bridge(void){
     return;
-};
+}
 
 inline void xmit_spi(uint8_t dat) {
     sspSend(0, (uint8_t*) &dat, 1);
@@ -177,7 +243,7 @@ char snd_pkt_no_crc(int size, uint8_t * pkt)
     CE_LOW();
 
     return nrf_cmd_status(C_NOP);
-};
+}
 
 void serialmsg_init(void)
 {

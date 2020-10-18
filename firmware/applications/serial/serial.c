@@ -35,6 +35,8 @@ char funkencrypt=0;
 #error "CDC is not defined"
 #endif
 
+#define puts_plus puts
+
 /**************************************************************************/
 
 uint32_t thekey[4] = { 0x0, 0x0, 0x0, 0x0 };
@@ -129,7 +131,7 @@ static uint8_t * hextobyte(char * input, int *len){
     };
     *len=bp;
     return buf;
-};
+}
 
 static uint32_t gethexval(char * input){
     int len;
@@ -138,7 +140,7 @@ static uint32_t gethexval(char * input){
     while(--len>0)
         v=v*256+(*++hex);
     return v;
-};
+}
 
 static int process(char * input){
     if(input == NULL || input[0]==0)
@@ -365,7 +367,7 @@ static int process(char * input){
         puts_plus(" ...\r\n");
         if(t>0)
             t=getTimer()+t*1000/SYSTICKSPEED;
-        nrf_rcv_pkt_start();
+        nrf_rcv_pkt_start(R_CONFIG_EN_CRC);
         do{
             len=nrf_rcv_pkt_poll_dec(sizeof(buf),buf,funkencrypt?thekey:NULL);
             // Receive
@@ -473,4 +475,4 @@ static int process(char * input){
     };
     puts("D done.\r\n");
     return 0;
-};
+}
